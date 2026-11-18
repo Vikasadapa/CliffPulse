@@ -311,7 +311,7 @@ def review_queue_markdown(summary: dict, audits: list[dict], repetitions: list[d
 
 
 def run_audit(input_dir: str | Path, output_dir: str | Path | None = None, paywall_start: int = 4,
-              paywall_end: int = 10, show_title: str | None = None, input_pattern: str = "episode-*.txt") -> Path:
+              paywall_end: int = 10, show_title: str | None = None, input_pattern: str = "*.txt") -> Path:
     started = time.perf_counter()
     source = Path(input_dir).expanduser().resolve()
     if not source.is_dir():
@@ -416,7 +416,7 @@ def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description="Create an evidence-based editorial review queue from timestamped scripts.")
     parser.add_argument("--input-dir", default=str(DEFAULT_INPUT_DIR))
     parser.add_argument("--output-dir", help="New or empty run folder; default creates a unique folder under runs/.")
-    parser.add_argument("--input-pattern", default="episode-*.txt")
+    parser.add_argument("--input-pattern", default="*.txt")
     parser.add_argument("--paywall-start", type=int, default=4)
     parser.add_argument("--paywall-end", type=int, default=10)
     parser.add_argument("--show-title")
