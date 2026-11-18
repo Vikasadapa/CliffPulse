@@ -5,8 +5,8 @@ import csv
 import html
 import io
 import json
-import os
 import re
+import shutil
 from pathlib import Path
 import subprocess
 import sys
@@ -19,8 +19,20 @@ import streamlit as st
 st.set_page_config(page_title="CliffPulse · Editor's room", page_icon="◒", layout="wide")
 SCRIPT_DIR = Path(__file__).resolve().parent
 PACKAGE_DIR = SCRIPT_DIR.parent
-DEFAULT_INPUT_DIR = PACKAGE_DIR / "sample_scripts" if (PACKAGE_DIR / "sample_scripts").is_dir() else PACKAGE_DIR.parent
 REPORT_NAME = "master_retention_and_stalling_report.json"
+
+# Remove audit folders created by the old shared-workspace implementation.
+# New audit outputs are stored in a per-browser-session temporary workspace.
+if not st.session_state.get("_cliffpulse_legacy_outputs_removed", False):
+    for legacy_dir in (PACKAGE_DIR / "runs", PACKAGE_DIR / "raw_outputs"):
+        shutil.rmtree(legacy_dir, ignore_errors=True)
+    st.session_state["_cliffpulse_legacy_outputs_removed"] = True
+
+if "_cliffpulse_workspace" not in st.session_state:
+    st.session_state["_cliffpulse_workspace"] = tempfile.TemporaryDirectory(
+        prefix="cliffpulse_session_"
+    )
+SESSION_WORKSPACE = Path(st.session_state["_cliffpulse_workspace"].name)
 STATUS_LABELS = {
     "REVIEW_CLOSURE": "Closure cues · review",
     "MIXED_SIGNALS": "Mixed ending cues",
@@ -110,20 +122,6 @@ def read_json(path, default=None):
         return default
 
 
-def discover_runs():
-    candidates = list((PACKAGE_DIR / "runs").glob(f"*/{REPORT_NAME}"))
-    configured = os.environ.get("CLIFFPULSE_OUTPUT_DIR")
-    if configured:
-        candidates.append(Path(configured).expanduser().resolve() / REPORT_NAME)
-    candidates.append(PACKAGE_DIR / "raw_outputs" / REPORT_NAME)
-    found = {}
-    for report in candidates:
-        data = read_json(report, {})
-        if data.get("schema_version") == 3:
-            found[str(report.parent.resolve())] = (data, report.stat().st_mtime_ns)
-    return sorted(found.items(), key=lambda item: item[1][1], reverse=True)
-
-
 @st.cache_data(show_spinner=False)
 def load_run(run_dir, report_version):
     folder = Path(run_dir)
@@ -198,7 +196,7 @@ def review_export(run_key):
 with st.sidebar:
     st.markdown("## Your review workspace")
     st.caption("Load scripts, inspect the evidence, and record an editorial decision.")
-    with st.expander("Start a new audit", expanded=not bool(discover_runs())):
+    with st.expander("Start a new audit", expanded=not bool(st.session_state.get("active_run"))):
         with st.form("run_audit"):
             uploaded_scripts = st.file_uploader(
                 "Upload timestamped script files",
@@ -257,40 +255,53 @@ with st.sidebar:
                             (input_dir / safe_name).write_bytes(raw_bytes)
                             saved_names.append(safe_name)
 
-                        command = [sys.executable, str(SCRIPT_DIR / "run_pipeline.py"), "--input-dir", str(input_dir), "--input-pattern", "episode-*.txt", "--paywall-start", str(gate_start), "--paywall-end", str(gate_end)]
+                        # Keep only the current audit for this browser session.
+                        previous_run = st.session_state.get("active_run")
+                        if previous_run:
+                            previous_path = Path(previous_run).resolve()
+                            try:
+                                previous_path.relative_to(SESSION_WORKSPACE.resolve())
+                                shutil.rmtree(previous_path, ignore_errors=True)
+                            except ValueError:
+                                pass
+
+                        output_dir = SESSION_WORKSPACE / (
+                            "audit-" + datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S-%f")
+                        )
+                        command = [
+                            sys.executable, str(SCRIPT_DIR / "run_pipeline.py"),
+                            "--input-dir", str(input_dir),
+                            "--output-dir", str(output_dir),
+                            "--input-pattern", "episode-*.txt",
+                            "--paywall-start", str(gate_start),
+                            "--paywall-end", str(gate_end),
+                        ]
                         if show_title.strip():
                             command.extend(["--show-title", show_title.strip()])
-                        with st.spinner("Reading scripts and saving a new audit…"):
+                        with st.spinner("Reading scripts and preparing your private audit…"):
                             process = subprocess.run(command, cwd=str(SCRIPT_DIR), capture_output=True, text=True, timeout=120)
 
                     if process.returncode:
                         st.error("The audit could not finish. Check that the uploaded files use the supported timestamped screenplay format and episode numbers in filenames or script metadata.")
                         st.code((process.stderr or process.stdout)[-4000:], language="text")
                     else:
-                        new_runs = discover_runs()
-                        if new_runs:
-                            st.session_state["active_run"] = new_runs[0][0]
-                        st.success("A new audit is ready.")
+                        st.session_state["active_run"] = str(output_dir.resolve())
+                        st.success("Your audit is ready in this browser session. It is not added to a shared saved-audits list.")
                 except (OSError, subprocess.TimeoutExpired) as error:
                     st.error(f"The audit could not complete: {error}")
 
-    runs = discover_runs()
-    options = [item[0] for item in runs]
-    run_metadata = {key: value for key, value in runs}
-    if options:
-        if st.session_state.get("active_run") not in options:
-            st.session_state["active_run"] = options[0]
-        run_dir = st.selectbox("Saved audit", options, key="active_run", format_func=lambda path: f"{run_metadata[path][0].get('show_title', Path(path).name)} · {Path(path).name}")
-        st.caption(f"Run: {Path(run_dir).name}")
+    run_dir = st.session_state.get("active_run")
+    if run_dir and Path(run_dir).is_dir():
+        st.caption(f"Current session audit: {Path(run_dir).name}")
     else:
         run_dir = None
     st.markdown("---")
-    st.caption("Supported input: upload timestamped UTF-8 screenplay .txt files, one file per episode; episode numbers must appear in filenames or script metadata. Your source scripts stay intact. Each audit creates its own results folder.")
+    st.caption("Supported input: upload timestamped UTF-8 screenplay .txt files, one file per episode; episode numbers must appear in filenames or script metadata. Audit results are kept only in this browser session, not in a shared saved-audits list.")
 
 if not run_dir:
     st.markdown('<section class="hero"><div class="brand"><span class="brand-icon">◒</span> CliffPulse / Editor\'s room</div><h1>Give every ending<br><span>a closer read.</span></h1><p>Start an audit from the panel on the left. CliffPulse collects script evidence for editors to review before production.</p></section>', unsafe_allow_html=True)
-    st.info("No current-format audit is available yet. Use ‘Start a new audit’ to analyse the supplied scripts.")
-    st.caption("Older demonstration outputs are archived and excluded from this workspace.")
+    st.info("No audit is active in this browser session. Use ‘Start a new audit’ to upload scripts and analyse them.")
+    st.caption("Audits are not saved to a shared history. Starting a new audit replaces the previous audit in this session.")
     st.stop()
 
 report_version = tuple(
