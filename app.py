@@ -6,6 +6,7 @@ import html
 import io
 import json
 import os
+import re
 from pathlib import Path
 import subprocess
 import sys
@@ -220,13 +221,43 @@ with st.sidebar:
                 try:
                     with tempfile.TemporaryDirectory(prefix="cliffpulse_uploaded_scripts_") as upload_dir:
                         input_dir = Path(upload_dir)
-                        for uploaded_script in uploaded_scripts:
-                            # Keep only the uploaded filename; do not accept client-side paths.
+                        saved_names = []
+                        episode_ids = set()
+                        for upload_index, uploaded_script in enumerate(uploaded_scripts, start=1):
+                            # Keep only the uploaded filename; never accept client-side paths.
                             source_name = Path(uploaded_script.name).name
-                            safe_name = f"{Path(source_name).stem}.txt"  # Normalize extension case for Linux hosting.
-                            (input_dir / safe_name).write_bytes(uploaded_script.getvalue())
+                            raw_bytes = uploaded_script.getvalue()
+                            try:
+                                source_text = raw_bytes.decode("utf-8-sig")
+                            except UnicodeDecodeError as error:
+                                raise ValueError(f"{source_name}: file is not valid UTF-8 text.") from error
 
-                        command = [sys.executable, str(SCRIPT_DIR / "run_pipeline.py"), "--input-dir", str(input_dir), "--input-pattern", "*.txt", "--paywall-start", str(gate_start), "--paywall-end", str(gate_end)]
+                            # Prefer the screenplay's explicit episode metadata, then its filename.
+                            header_match = re.search(
+                                r"^EPISODE NUMBER:[ \\t]*(?:Episode[ \\t]*)?(\\d+)\\b",
+                                source_text, re.M | re.I,
+                            )
+                            filename_match = re.search(
+                                r"(?:episode|ep)[-_ ]*(\\d+)",
+                                source_name, re.I,
+                            )
+                            episode_match = header_match or filename_match
+                            episode_id = int(episode_match.group(1)) if episode_match else upload_index
+                            if episode_id < 1:
+                                raise ValueError(f"{source_name}: episode number must be positive.")
+                            if episode_id in episode_ids:
+                                raise ValueError(
+                                    f"Two uploaded files resolve to Episode {episode_id}. "
+                                    "Check their episode metadata and filenames."
+                                )
+                            episode_ids.add(episode_id)
+
+                            # Always write the exact filename pattern used by the original pipeline.
+                            safe_name = f"episode-{episode_id:03d}.txt"
+                            (input_dir / safe_name).write_bytes(raw_bytes)
+                            saved_names.append(safe_name)
+
+                        command = [sys.executable, str(SCRIPT_DIR / "run_pipeline.py"), "--input-dir", str(input_dir), "--input-pattern", "episode-*.txt", "--paywall-start", str(gate_start), "--paywall-end", str(gate_end)]
                         if show_title.strip():
                             command.extend(["--show-title", show_title.strip()])
                         with st.spinner("Reading scripts and saving a new audit…"):
