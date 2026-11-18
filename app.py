@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+import tempfile
 from datetime import datetime, timezone
 
 import pandas as pd
@@ -198,7 +199,12 @@ with st.sidebar:
     st.caption("Load scripts, inspect the evidence, and record an editorial decision.")
     with st.expander("Start a new audit", expanded=not bool(discover_runs())):
         with st.form("run_audit"):
-            input_dir = st.text_input("Script folder on this computer", value=str(DEFAULT_INPUT_DIR))
+            uploaded_scripts = st.file_uploader(
+                "Upload timestamped script files",
+                type=["txt"],
+                accept_multiple_files=True,
+                help="Select the episode-*.txt screenplay files for this show.",
+            )
             show_title = st.text_input("Show title (optional)", value="")
             first_col, last_col = st.columns(2)
             gate_start = first_col.number_input("Paywall starts", min_value=1, value=4, step=1)
@@ -208,17 +214,25 @@ with st.sidebar:
         if launched:
             if gate_end < gate_start:
                 st.error("The paywall end must be on or after its start.")
-            elif not Path(input_dir).expanduser().is_dir():
-                st.error("That folder could not be found on this computer.")
+            elif not uploaded_scripts:
+                st.error("Please upload one or more timestamped .txt screenplay files.")
             else:
-                command = [sys.executable, str(SCRIPT_DIR / "run_pipeline.py"), "--input-dir", str(Path(input_dir).expanduser()), "--paywall-start", str(gate_start), "--paywall-end", str(gate_end)]
-                if show_title.strip():
-                    command.extend(["--show-title", show_title.strip()])
                 try:
-                    with st.spinner("Reading scripts and saving a new audit…"):
-                        process = subprocess.run(command, cwd=str(SCRIPT_DIR), capture_output=True, text=True, timeout=120)
+                    with tempfile.TemporaryDirectory(prefix="cliffpulse_uploaded_scripts_") as upload_dir:
+                        input_dir = Path(upload_dir)
+                        for uploaded_script in uploaded_scripts:
+                            # Keep only the uploaded filename; do not accept client-side paths.
+                            safe_name = Path(uploaded_script.name).name
+                            (input_dir / safe_name).write_bytes(uploaded_script.getvalue())
+
+                        command = [sys.executable, str(SCRIPT_DIR / "run_pipeline.py"), "--input-dir", str(input_dir), "--paywall-start", str(gate_start), "--paywall-end", str(gate_end)]
+                        if show_title.strip():
+                            command.extend(["--show-title", show_title.strip()])
+                        with st.spinner("Reading scripts and saving a new audit…"):
+                            process = subprocess.run(command, cwd=str(SCRIPT_DIR), capture_output=True, text=True, timeout=120)
+
                     if process.returncode:
-                        st.error("The audit could not finish. Check that the folder contains supported timestamped text scripts.")
+                        st.error("The audit could not finish. Check that the uploaded files use the supported timestamped screenplay format and episode-*.txt filenames.")
                         st.code((process.stderr or process.stdout)[-4000:], language="text")
                     else:
                         new_runs = discover_runs()
@@ -239,7 +253,7 @@ with st.sidebar:
     else:
         run_dir = None
     st.markdown("---")
-    st.caption("Supported input: timestamped UTF-8 screenplays named episode-*.txt, one file per episode. Your source scripts stay intact. Each audit creates its own results folder.")
+    st.caption("Supported input: upload timestamped UTF-8 screenplays named episode-*.txt, one file per episode. Your source scripts stay intact. Each audit creates its own results folder.")
 
 if not run_dir:
     st.markdown('<section class="hero"><div class="brand"><span class="brand-icon">◒</span> CliffPulse / Editor\'s room</div><h1>Give every ending<br><span>a closer read.</span></h1><p>Start an audit from the panel on the left. CliffPulse collects script evidence for editors to review before production.</p></section>', unsafe_allow_html=True)
