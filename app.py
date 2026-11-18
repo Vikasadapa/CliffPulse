@@ -234,11 +234,11 @@ with st.sidebar:
 
                             # Prefer the screenplay's explicit episode metadata, then its filename.
                             header_match = re.search(
-                                r"^EPISODE NUMBER:[ \\t]*(?:Episode[ \\t]*)?(\\d+)\\b",
+                                r"^EPISODE NUMBER:[ \t]*(?:Episode[ \t]*)?(\d+)\b",
                                 source_text, re.M | re.I,
                             )
                             filename_match = re.search(
-                                r"(?:episode|ep)[-_ ]*(\\d+)",
+                                r"(?:episode|ep)[-_ ]*(\d+)",
                                 source_name, re.I,
                             )
                             episode_match = header_match or filename_match
